@@ -1,0 +1,13 @@
+# Render Blueprint: koppla GitHub-repo under "Blueprint" eller skapa manuellt en Web Service
+# och använd samma Start-kommando nedan.
+
+services:
+  - type: web
+    name: kronviva
+    runtime: python
+    region: frankfurt
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health

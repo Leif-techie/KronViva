@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KronViva – Spelstatistik 2026</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; }
+    .sortable { cursor: pointer; }
+    .sortable:hover { background: rgba(0,0,0,0.04); }
+    .sort-arrow { display: inline-block; margin-left: 3px; opacity: 0.4; font-size: 0.75em; }
+    .sort-arrow.active { opacity: 1; }
+    tr:hover td { background: rgba(59,130,246,0.04); }
+    .modal-backdrop { backdrop-filter: blur(2px); }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-in { animation: fadeIn 0.2s ease; }
+    .col-hcp-hint { font-size: 0.6rem; display: block; font-weight: 400; color: #a78bfa; letter-spacing: 0; text-transform: none; margin-top: 1px; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+function fmt(n, dec = 2) {
+  return n != null && !Number.isNaN(n) ? n.toFixed(dec) + "%" : "—";
+}
+function fmtHcp(n) {
+  if (n == null) return "—";
+  return (n >= 0 ? "+" : "") + n.toFixed(1);
+}
+function pctColor(v) {
+  if (v == null) return "text-gray-300";
+  if (v >= 55) return "text-green-700";
+  if (v < 46) return "text-red-600";
+  return "text-gray-800";
+}
+
+function PlayerModal({ player, onClose, sortKey }) {
+  if (!player) return null;
+  const bySeason = player.competitions.slice().sort((a,b) => b.date.localeCompare(a.date));
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 modal-backdrop"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-hidden flex flex-col animate-in"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between p-6 pb-4 border-b">
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900">{player.name}</h2>
+            {(player.birthdate || player.age != null) && (
+              <div className="flex flex-wrap gap-x-6 gap-y-1 mt-2 text-sm text-gray-500">
+                {player.birthdate && (
+                  <span>Födelsedag: <strong className="text-gray-700">{player.birthdate}</strong></span>
+                )}
+                {player.age != null && (
+                  <span>Ålder: <strong className="text-gray-700">{player.age} år</strong></span>
+                )}
+              </div>
+            )}
+          </div>
+          <button type="button" onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 text-2xl leading-none ml-4">×</button>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 p-6 pb-4">
+          {[
+            { label: "Snitt Scratch %", value: fmt(player.avg_scratch_pct), bold: sortKey !== "avg_hcp_pct" },
+            { label: "Snitt Hcp %", value: fmt(player.avg_hcp_pct ?? player.avg_pct), bold: sortKey === "avg_hcp_pct" },
+            { label: "Onsdagar", value: player.wednesday_comps ?? player.total_comps },
+            { label: "Handicap (SVB)", value: fmtHcp(player.hcp) },
+          ].map(s => (
+            <div key={s.label} className="text-center">
+              <div className={`text-2xl font-bold ${s.bold ? "text-gray-900" : "text-gray-400"}`}>{s.value}</div>
+              <div className="text-xs text-gray-500 mt-0.5">{s.label}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="px-6 pb-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          Tävlingshistorik (onsdag)
+        </div>
+        <div className="overflow-y-auto flex-1">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 sticky top-0">
+              <tr>
+                <th className="text-left px-6 py-2 text-gray-500 font-medium">Datum</th>
+                <th className="text-left px-6 py-2 text-gray-500 font-medium">Partner</th>
+                <th className="text-right px-6 py-2 text-gray-500 font-medium">Plac</th>
+                <th className="text-right px-6 py-2 text-gray-500 font-medium">Scratch %</th>
+                <th className="text-right px-6 py-2 text-gray-500 font-medium">Hcp %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bySeason.map((c, i) => (
+                <tr key={i} className="border-t border-gray-100">
+                  <td className="px-6 py-2 text-gray-700">{c.date}</td>
+                  <td className="px-6 py-2 text-gray-700">{c.partner || "—"}</td>
+                  <td className="px-6 py-2 text-right text-gray-600">{c.placement}</td>
+                  <td className={`px-6 py-2 text-right font-medium ${pctColor(c.scratch_pct)}`}>
+                    {fmt(c.scratch_pct)}
+                  </td>
+                  <td className={`px-6 py-2 text-right font-medium ${pctColor(c.hcp_pct ?? c.pct)}`}>
+                    {fmt(c.hcp_pct ?? c.pct)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [players, setPlayers] = useState([]);
+  const [meta, setMeta] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [search, setSearch] = useState("");
+  const [minComps, setMinComps] = useState(1);
+  const [sortKey, setSortKey] = useState("avg_scratch_pct");
+  const [sortDir, setSortDir] = useState("desc");
+  const [selectedPlayer, setSelectedPlayer] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timerId;
+    let pollCount = 0;
+    const maxPolls = 40;
+
+    function load() {
+      Promise.all([
+        fetch("/api/results").then(r => r.json()),
+        fetch("/api/meta").then(r => r.json()),
+      ])
+        .then(([p, m]) => {
+          if (cancelled) return;
+          setPlayers(p);
+          setMeta(m);
+          const waitingFirstScrape =
+            Array.isArray(p) &&
+            p.length === 0 &&
+            m &&
+            !m.last_updated &&
+            pollCount < maxPolls;
+          if (waitingFirstScrape) {
+            pollCount += 1;
+            timerId = window.setTimeout(load, 3500);
+            return;
+          }
+          setLoading(false);
+        })
+        .catch(err => {
+          if (cancelled) return;
+          setError("Kunde inte ladda data: " + err.message);
+          setLoading(false);
+        });
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+      if (timerId) window.clearTimeout(timerId);
+    };
+  }, []);
+
+  const handleSort = useCallback((key) => {
+    if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDir(key === "name" ? "asc" : "desc"); }
+  }, [sortKey]);
+
+  const enriched = useMemo(() => players.map(p => ({
+    ...p,
+    avg_hcp_pct: p.avg_hcp_pct ?? p.avg_pct,
+  })), [players]);
+
+  const filtered = useMemo(() => {
+    let list = enriched.filter(p =>
+      p.total_comps >= minComps &&
+      p.name.toLowerCase().includes(search.toLowerCase())
+    );
+
+    const EPS = 1e-6;
+    function primaryCmp(a, b) {
+      const av = a[sortKey], bv = b[sortKey];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === "string") {
+        const c = sortDir === "asc" ? av.localeCompare(bv, "sv") : bv.localeCompare(av, "sv");
+        return c;
+      }
+      const diff = sortDir === "asc" ? av - bv : bv - av;
+      return diff > EPS ? 1 : diff < -EPS ? -1 : 0;
+    }
+
+    function tieBreakAfterPrimary(a, b) {
+      if (sortKey === "name") return 0;
+      let d;
+      const sc = a.avg_scratch_pct ?? -1e9;
+      const sb = b.avg_scratch_pct ?? -1e9;
+      const hc = a.avg_hcp_pct ?? -1e9;
+      const hb = b.avg_hcp_pct ?? -1e9;
+      if (sortKey === "hcp") {
+        d = sb - sc;
+        if (Math.abs(d) > EPS) return d > 0 ? 1 : -1;
+      } else if (sortKey === "total_comps") {
+        d = sb - sc;
+        if (Math.abs(d) > EPS) return d > 0 ? 1 : -1;
+      } else if (sortKey === "avg_scratch_pct") {
+        d = hb - hc;
+        if (Math.abs(d) > EPS) return d > 0 ? 1 : -1;
+      } else if (sortKey === "avg_hcp_pct") {
+        d = sb - sc;
+        if (Math.abs(d) > EPS) return d > 0 ? 1 : -1;
+      }
+      d = (b.total_comps || 0) - (a.total_comps || 0);
+      if (d !== 0) return d > 0 ? 1 : -1;
+      return a.name.localeCompare(b.name, "sv");
+    }
+
+    list = [...list].sort((a, b) => {
+      let c = primaryCmp(a, b);
+      if (c !== 0) return c;
+      c = tieBreakAfterPrimary(a, b);
+      if (c !== 0) return c;
+      return a.name.localeCompare(b.name, "sv");
+    });
+
+    function primaryEqual(a, b) {
+      return primaryCmp(a, b) === 0;
+    }
+
+    let compRank = 1;
+    return list.map((p, i) => {
+      if (i > 0 && !primaryEqual(p, list[i - 1])) compRank = i + 1;
+      return { ...p, filteredRank: compRank };
+    });
+  }, [enriched, minComps, search, sortKey, sortDir]);
+
+  if (loading) return (
+    <div className="min-h-screen flex flex-col items-center justify-center gap-2 text-gray-500 px-4 text-center">
+      <p className="text-base">Laddar tävlingsresultat…</p>
+      <p className="text-sm text-gray-400 max-w-md">
+        Första gången servern startar kan det ta någon minut medan data hämtas från Svenska Bridgeförbundet.
+      </p>
+    </div>
+  );
+  if (error) return (
+    <div className="min-h-screen flex items-center justify-center text-red-500">{error}</div>
+  );
+
+  const lastUpdated = meta?.last_updated
+    ? new Date(meta.last_updated).toLocaleDateString("sv-SE", {
+        year: "numeric", month: "long", day: "numeric",
+        hour: "2-digit", minute: "2-digit"
+      })
+    : "—";
+
+  const rankingByScratch = sortKey !== "avg_hcp_pct";
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 py-8">
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-gray-900">KronViva</h1>
+        <p className="text-gray-500 mt-1">
+          Spelstatistik 2026 – onsdagsbridge (Allégården, Göteborg).
+          Ranking sker normalt på <strong>Scratch&nbsp;%</strong>; klicka på <em>Hcp&nbsp;%</em> för alternativ ranking.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
+        {[
+          { label: "Genomförda tävlingar", value: meta?.total_competitions ?? "—" },
+          { label: "Spelare (filtret)", value: filtered.length, color: "text-violet-600" },
+          { label: "Uppdaterad", value: lastUpdated, small: true },
+        ].map(s => (
+          <div key={s.label} className="bg-white rounded-xl border border-gray-200 p-4 text-center">
+            <div className={`font-bold ${s.color || "text-gray-900"} ${s.small ? "text-base font-semibold text-gray-800" : "text-2xl"}`}>
+              {s.value}
+            </div>
+            <div className="text-xs text-gray-500 mt-1">{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {rankingByScratch && (
+        <div className="mb-3 flex items-center gap-2 text-sm text-violet-700 bg-violet-50 border border-violet-100 rounded-lg px-4 py-2">
+          <span>📊</span>
+          <span>Rankad efter <strong>Scratch&nbsp;%</strong> – klicka på kolumnrubriken <em>Hcp&nbsp;%</em> för att byta till handicapranking.</span>
+        </div>
+      )}
+      {!rankingByScratch && (
+        <div className="mb-3 flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-4 py-2">
+          <span>📋</span>
+          <span>Rankad efter <strong>Hcp&nbsp;%</strong> – klicka på <em>Scratch&nbsp;%</em> för att återgå till scratchranking.</span>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-4 mb-3 text-xs text-gray-500">
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-2 h-2 rounded-full bg-green-500" /> Snitt ≥ 55%
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-2 h-2 rounded-full bg-red-400" /> Snitt &lt; 46%
+        </span>
+      </div>
+
+      <div className="flex flex-wrap gap-3 items-center mb-4">
+        <input
+          type="search"
+          placeholder="Sök spelare…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 w-52"
+        />
+        <div className="flex items-center gap-2 text-sm text-gray-600">
+          <span>Min. tävlingar:</span>
+          {[1, 3, 5, 10].map(n => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => setMinComps(n)}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium border transition
+                ${minComps === n
+                  ? "bg-violet-600 text-white border-violet-600"
+                  : "bg-white text-gray-600 border-gray-300 hover:border-violet-400"}`}
+            >
+              {n}+
+            </button>
+          ))}
+        </div>
+        <span className="ml-auto text-xs text-gray-400">
+          {filtered.length} av {players.length} spelare
+        </span>
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                {/* # */}
+                <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide w-10"
+                  title="Klassisk tävlingsranking: vid lika värden delas samma placering (#).">
+                  #
+                </th>
+
+                {/* Spelare */}
+                <th
+                  className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide sortable select-none"
+                  onClick={() => handleSort("name")}
+                >
+                  Spelare
+                  <span className={`sort-arrow ${sortKey === "name" ? "active text-violet-600" : ""}`}>
+                    {sortKey === "name" ? (sortDir === "asc" ? "↑" : "↓") : "↕"}
+                  </span>
+                </th>
+
+                {/* Scratch % – primär, alltid prominent */}
+                <th
+                  className={`px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide sortable select-none
+                    ${rankingByScratch ? "text-gray-800" : "text-gray-500"}`}
+                  onClick={() => handleSort("avg_scratch_pct")}
+                  title="Klicka för att ranka efter Scratch %"
+                >
+                  Scratch&nbsp;%
+                  <span className={`sort-arrow ${sortKey === "avg_scratch_pct" ? "active text-violet-600" : ""}`}>
+                    {sortKey === "avg_scratch_pct" ? (sortDir === "asc" ? "↑" : "↓") : "↕"}
+                  </span>
+                </th>
+
+                {/* Hcp % – nedtonad, klickbar för alternativ ranking */}
+                <th
+                  className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide sortable select-none text-gray-400"
+                  onClick={() => handleSort("avg_hcp_pct")}
+                  title="Klicka för att ranka efter Handicap %"
+                >
+                  Hcp&nbsp;%
+                  <span className={`sort-arrow ${sortKey === "avg_hcp_pct" ? "active text-violet-600" : ""}`}>
+                    {sortKey === "avg_hcp_pct" ? (sortDir === "asc" ? "↑" : "↓") : "↕"}
+                  </span>
+                  <span className="col-hcp-hint">↑ klicka för hcp-ranking</span>
+                </th>
+
+                {/* Tävlingar */}
+                <th
+                  className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide sortable select-none"
+                  onClick={() => handleSort("total_comps")}
+                  title="Antal spelade tävlingar"
+                >
+                  Tävl.
+                  <span className={`sort-arrow ${sortKey === "total_comps" ? "active text-violet-600" : ""}`}>
+                    {sortKey === "total_comps" ? (sortDir === "asc" ? "↑" : "↓") : "↕"}
+                  </span>
+                </th>
+
+                {/* Hcp SVB */}
+                <th
+                  className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide sortable select-none"
+                  onClick={() => handleSort("hcp")}
+                  title="Individuellt handicap från SVB"
+                >
+                  Hcp (SVB)
+                  <span className={`sort-arrow ${sortKey === "hcp" ? "active text-violet-600" : ""}`}>
+                    {sortKey === "hcp" ? (sortDir === "asc" ? "↑" : "↓") : "↕"}
+                  </span>
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filtered.map((p) => (
+                <tr key={p.name}>
+                  <td className="px-4 py-2.5 text-right text-gray-400 tabular-nums w-10">
+                    {p.filteredRank}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPlayer(p)}
+                      className="font-medium text-violet-700 hover:underline text-left"
+                    >
+                      {p.name}
+                    </button>
+                  </td>
+
+                  {/* Scratch % – alltid prominent */}
+                  <td className={`px-4 py-2.5 text-right font-semibold tabular-nums
+                    ${rankingByScratch ? pctColor(p.avg_scratch_pct) : "text-gray-500"}`}>
+                    {fmt(p.avg_scratch_pct)}
+                  </td>
+
+                  {/* Hcp % – nedtonad när scratch är primär */}
+                  <td className={`px-4 py-2.5 text-right tabular-nums
+                    ${!rankingByScratch ? "font-semibold " + pctColor(p.avg_hcp_pct) : "text-gray-400"}`}>
+                    {fmt(p.avg_hcp_pct)}
+                  </td>
+
+                  <td className="px-4 py-2.5 text-right text-gray-600 tabular-nums">
+                    {p.total_comps}
+                  </td>
+                  <td className="px-4 py-2.5 text-right text-gray-500 tabular-nums">
+                    {fmtHcp(p.hcp)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {filtered.length === 0 && (
+          <div className="text-center py-12 text-gray-400">
+            Inga spelare matchar filtret.
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6 text-xs text-gray-400 text-center space-y-1">
+        <p>KronViva · Onsdagsbridge 18:30 · Allégården, Haga, Göteborg</p>
+        <p>Data från Svenska Bridgeförbundet. Scratch % = scratchresultatlista, Hcp % = handicapresultatlista.</p>
+        <p>Sedan 14 jan 2026. Uppdateras automatiskt varje fredag kl. 06:00.</p>
+      </div>
+
+      <PlayerModal player={selectedPlayer} onClose={() => setSelectedPlayer(null)} sortKey={sortKey} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
