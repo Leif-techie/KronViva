@@ -9,7 +9,8 @@ import json
 import logging
 import re
 import time
-from collections import defaultdict
+import unicodedata
+from collections import Counter, defaultdict
 from datetime import date, datetime
 from pathlib import Path
 
@@ -45,19 +46,50 @@ WEEKDAYS_SV = (
 # När gamla tvl-länkar försvinner från klubbsidan kan id listas här eller i data/extra_tvl_ids.txt
 ADDITIONAL_TVL_IDS: list[int] = []
 
+# Parnamn "A - B" kan använda vanligt bindestreck, en-dash eller minus-tecken.
+PAIR_SPLIT_RE = re.compile(r"\s*[\u2013\u2212\-]\s*")
 
-def discover_tvl_ids_from_club_index() -> set[int]:
+
+def normalize_player_key(name: str) -> str:
+    """Stabil nyckel så t.ex. LARS HÖGBLOM och Lars Högblom slås ihop till en spelare."""
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFKC", name)
+    s = re.sub(r"\s+", " ", s.strip())
+    return s.casefold()
+
+
+def choose_display_name(votes: Counter) -> str:
+    """Vanligast förekommande råsträng från SVB; vid lika längst sträng (oftast mest komplett)."""
+    if not votes:
+        return ""
+    return sorted(votes.items(), key=lambda x: (-x[1], -len(x[0]), x[0]))[0][0]
+
+
+def split_pair_name(pair_name: str) -> tuple[str, str]:
+    parts = PAIR_SPLIT_RE.split(pair_name.strip(), maxsplit=1)
+    if len(parts) == 2:
+        return parts[0].strip(), parts[1].strip()
+    return pair_name.strip(), ""
+
+
+def discover_tvl_links_on_club_page(club_slug: str) -> set[int]:
+    """Alla tvl-ID som länkas från klubbens startsida (roterande fönster – gamla id kan saknas)."""
     ids: set[int] = set()
     try:
-        r = requests.get(f"https://www.svenskbridge.se/{CLUB_PATH}", timeout=25)
+        r = requests.get(f"https://www.svenskbridge.se/{club_slug}", timeout=25)
         r.raise_for_status()
         for a in BeautifulSoup(r.text, "html.parser").find_all("a", href=True):
-            m = re.search(rf"/{re.escape(CLUB_PATH)}/tvl/(\d+)", a["href"])
+            m = re.search(rf"/{re.escape(club_slug)}/tvl/(\d+)", a["href"])
             if m:
                 ids.add(int(m.group(1)))
     except OSError as e:
-        logger.warning("Kunde inte lista tävlingar från klubbsida: %s", e)
+        logger.warning("Kunde inte lista tävlingar från /%s/: %s", club_slug, e)
     return ids
+
+
+def discover_tvl_ids_from_club_index() -> set[int]:
+    return discover_tvl_links_on_club_page(CLUB_PATH)
 
 
 def _load_ids_from_file(path: str) -> set[int]:
@@ -78,11 +110,18 @@ def load_extra_tvl_ids() -> set[int]:
 
 def load_alt_club_tvl_ids() -> dict[int, str]:
     """Laddar tävlingar registrerade under annan klubb (t.ex. BK Lejonet).
-    Returnerar dict: tvl_id -> club_slug."""
+
+    Även bk-lejonet-startsidan skannas: nya tävligs-ID läggs in automatiskt
+    (samma sätt som för KronViva-index), utöver statiska filer i data/.
+    """
     result: dict[int, str] = {}
-    for slug in ["bk-lejonet"]:
+    alt_slugs = ["bk-lejonet"]
+    for slug in alt_slugs:
         for tvl_id in _load_ids_from_file(f"data/{slug}_tvl_ids.txt"):
             result[tvl_id] = slug
+    for slug in alt_slugs:
+        for tvl_id in discover_tvl_links_on_club_page(slug):
+            result.setdefault(tvl_id, slug)
     return result
 
 
@@ -205,11 +244,7 @@ def fetch_competition(comp_id: int, club_slug: str = CLUB_PATH) -> dict | None:
                 except (ValueError, IndexError):
                     continue
 
-                if " - " in pair_name:
-                    parts = pair_name.split(" - ", 1)
-                    sp1, sp2 = parts[0].strip(), parts[1].strip()
-                else:
-                    sp1, sp2 = pair_name, ""
+                sp1, sp2 = split_pair_name(pair_name)
 
                 scratch_pct = scratch_pcts.get(pair_name)
 
@@ -269,8 +304,22 @@ def fetch_all_results(
 
     all_competitions.sort(key=lambda c: c["date"])
 
+    birthdates = birthdates or {}
+    handicap_by_key: dict[str, float] = {}
+    if handicaps:
+        for hk, hv in handicaps.items():
+            handicap_by_key[normalize_player_key(hk)] = hv
+    birth_by_key: dict[str, str] = {}
+    for bk, bv in birthdates.items():
+        nk = normalize_player_key(bk)
+        birth_by_key.setdefault(nk, bv)
+
     player_data: dict[str, dict] = defaultdict(
-        lambda: {"wednesday_comps": 0, "competitions": []}
+        lambda: {
+            "wednesday_comps": 0,
+            "competitions": [],
+            "_name_votes": Counter(),
+        }
     )
 
     for comp in all_competitions:
@@ -281,7 +330,11 @@ def fetch_all_results(
             ):
                 if not spelare:
                     continue
-                pd = player_data[spelare]
+                pname = normalize_player_key(spelare)
+                if not pname:
+                    continue
+                pd = player_data[pname]
+                pd["_name_votes"][spelare] += 1
                 pd["wednesday_comps"] += 1
                 pd["competitions"].append({
                     "date": comp["date"],
@@ -292,11 +345,11 @@ def fetch_all_results(
                     "hcp_pct": pair["hcp_pct"],
                     "scratch_pct": pair["scratch_pct"],
                     "pair_hcp": pair["pair_hcp"],
-                    "partner": partner,
+                    "partner": partner.strip() if isinstance(partner, str) else partner,
                 })
 
     players: list[dict] = []
-    for name, pd in player_data.items():
+    for _key, pd in player_data.items():
         comps = pd["competitions"]
         if not comps:
             continue
@@ -310,7 +363,11 @@ def fetch_all_results(
         hcp_values = [c["pair_hcp"] for c in comps if c["pair_hcp"] is not None]
         avg_hcp = sum(hcp_values) / len(hcp_values) if hcp_values else None
 
-        bd = birthdates.get(name) if birthdates else None
+        votes: Counter = pd.pop("_name_votes", Counter())
+        name = choose_display_name(votes)
+        lk = normalize_player_key(name)
+
+        bd = birth_by_key.get(lk)
         age = None
         if bd:
             try:
@@ -320,7 +377,7 @@ def fetch_all_results(
             except ValueError:
                 pass
 
-        individual_hcp = handicaps.get(name) if handicaps else None
+        individual_hcp = handicap_by_key.get(lk)
 
         players.append({
             "name": name,

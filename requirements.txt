@@ -3,3 +3,4 @@ uvicorn[standard]==0.34.0
 apscheduler==3.11.0
 requests==2.32.3
 beautifulsoup4==4.13.4
+tzdata>=2024.2  # säkerställer Europe/Stockholm i minimala Linux-miljöer (t.ex. vissa deploy-containrar)

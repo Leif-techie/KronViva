@@ -1,6 +1,6 @@
 """
 KronViva – spelstatistik onsdagar (handicap + scratch).
-Uppdateras automatiskt varje fredag kl. 06:00.
+Uppdateras automatiskt varje fredag kl. 06:00 (tidzon Europa/Stockholm på servern).
 """
 
 import logging
@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -91,17 +92,27 @@ scheduler = BackgroundScheduler()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     get_data()
+    tz = os.environ.get("REFRESH_CRON_TIMEZONE", "Europe/Stockholm")
+    h = int(os.environ.get("REFRESH_CRON_HOUR", "6"))
+    m = int(os.environ.get("REFRESH_CRON_MINUTE", "0"))
     scheduler.add_job(
         refresh_data,
-        trigger="cron",
-        day_of_week="fri",
-        hour=6,
-        minute=0,
+        trigger=CronTrigger(
+            day_of_week="fri",
+            hour=h,
+            minute=m,
+            timezone=tz,
+        ),
         id="weekly_refresh",
         replace_existing=True,
     )
     scheduler.start()
-    logger.info("Schemaläggare startad – uppdaterar varje fredag kl. 06:00")
+    logger.info(
+        "Schemaläggare startad – automatisk hämtning varje fredag kl. %s:%02d (%s)",
+        h,
+        m,
+        tz,
+    )
     yield
     scheduler.shutdown()
 
