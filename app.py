@@ -142,7 +142,7 @@ def api_competitions():
     return JSONResponse(data.get("competitions", []))
 
 
-@app.post("/api/refresh")
+@app.api_route("/api/refresh", methods=["GET", "POST"])
 def api_refresh(secret: str = ""):
     if secret != REFRESH_SECRET:
         raise HTTPException(status_code=403, detail="Felaktig nyckel")
