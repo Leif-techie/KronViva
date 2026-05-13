@@ -149,6 +149,23 @@ def api_refresh(secret: str = ""):
     return {"status": "Uppdatering startad i bakgrunden"}
 
 
+@app.post("/api/reload")
+def api_reload(secret: str = ""):
+    """Laddar om cache från lokal results.json utan att skrapa om SVB."""
+    global _cache
+    if secret != REFRESH_SECRET:
+        raise HTTPException(status_code=403, detail="Felaktig nyckel")
+    data = load_results(DATA_PATH)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Ingen lokal data att ladda")
+    _cache = data
+    return {
+        "status": "Cache omladdad från fil",
+        "competitions": data["meta"].get("total_competitions", 0),
+        "players": len(data.get("players", [])),
+    }
+
+
 @app.get("/api/names")
 def api_names():
     data = get_data()

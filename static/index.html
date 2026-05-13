@@ -94,7 +94,7 @@ function PlayerModal({ player, onClose, sortKey }) {
               <tr>
                 <th className="text-left px-6 py-2 text-gray-500 font-medium">Datum</th>
                 <th className="text-left px-6 py-2 text-gray-500 font-medium">Partner</th>
-                <th className="text-right px-6 py-2 text-gray-500 font-medium">Plac</th>
+                <th className="text-right px-6 py-2 text-gray-500 font-medium">Plac (scratch)</th>
                 <th className="text-right px-6 py-2 text-gray-500 font-medium">Scratch %</th>
                 <th className="text-right px-6 py-2 text-gray-500 font-medium">Hcp %</th>
               </tr>
@@ -104,7 +104,9 @@ function PlayerModal({ player, onClose, sortKey }) {
                 <tr key={i} className="border-t border-gray-100">
                   <td className="px-6 py-2 text-gray-700">{c.date}</td>
                   <td className="px-6 py-2 text-gray-700">{c.partner || "—"}</td>
-                  <td className="px-6 py-2 text-right text-gray-600">{c.placement}</td>
+                  <td className="px-6 py-2 text-right text-gray-600">
+                    {c.scratch_placement != null ? c.scratch_placement : (c.placement ?? "—")}
+                  </td>
                   <td className={`px-6 py-2 text-right font-medium ${pctColor(c.scratch_pct)}`}>
                     {fmt(c.scratch_pct)}
                   </td>

@@ -47,7 +47,8 @@ WEEKDAYS_SV = (
 ADDITIONAL_TVL_IDS: list[int] = []
 
 # Parnamn "A - B" kan använda vanligt bindestreck, en-dash eller minus-tecken.
-PAIR_SPLIT_RE = re.compile(r"\s*[\u2013\u2212\-]\s*")
+# Viktigt: bindestreck UTAN mellanslag ska INTE matchas (t.ex. "Sven-Olof" i ett namn).
+PAIR_SPLIT_RE = re.compile(r"\s*[\u2013\u2212]\s*|\s+-\s+")
 
 
 def normalize_player_key(name: str) -> str:
@@ -88,8 +89,44 @@ def discover_tvl_links_on_club_page(club_slug: str) -> set[int]:
     return ids
 
 
+def discover_tvl_ids_from_club_calendar() -> set[int]:
+    """Skannar KronVivas egna kalender månad för månad och hämtar alla tvl-ID:n.
+    Mer tillförlitlig än startsidan som bara visar ett roterande urval.
+    """
+    ids: set[int] = set()
+    today = date.today()
+    for year in [today.year]:
+        for month in range(1, today.month + 1):
+            month_str = f"{year}-{month:02d}"
+            try:
+                r = requests.get(
+                    f"https://www.svenskbridge.se/{CLUB_PATH}/kalender/{month_str}",
+                    timeout=15,
+                )
+                r.raise_for_status()
+                # Hitta alla kalender-noder på sidan
+                calendar_nodes = re.findall(r"/kalender/(\d{6,})", r.text)
+                for node in set(calendar_nodes):
+                    try:
+                        r2 = requests.get(
+                            f"https://www.svenskbridge.se/kalender/{node}",
+                            timeout=10,
+                        )
+                        for m in re.finditer(
+                            rf"/{re.escape(CLUB_PATH)}/tvl/(\d+)", r2.text
+                        ):
+                            ids.add(int(m.group(1)))
+                        time.sleep(0.15)
+                    except OSError:
+                        pass
+            except OSError as e:
+                logger.warning("Kunde inte hämta kalender %s: %s", month_str, e)
+    return ids
+
+
 def discover_tvl_ids_from_club_index() -> set[int]:
-    return discover_tvl_links_on_club_page(CLUB_PATH)
+    """Kombinerar kalender-skanning (fullständig) med startsidan (snabb, senaste)."""
+    return discover_tvl_ids_from_club_calendar() | discover_tvl_links_on_club_page(CLUB_PATH)
 
 
 def _load_ids_from_file(path: str) -> set[int]:
@@ -109,20 +146,10 @@ def load_extra_tvl_ids() -> set[int]:
 
 
 def load_alt_club_tvl_ids() -> dict[int, str]:
-    """Laddar tävlingar registrerade under annan klubb (t.ex. BK Lejonet).
-
-    Även bk-lejonet-startsidan skannas: nya tävligs-ID läggs in automatiskt
-    (samma sätt som för KronViva-index), utöver statiska filer i data/.
+    """Laddar tävlingar registrerade under annan klubb än KronViva.
+    BK Lejonet är en separat klubb och ingår inte i KronVivas onsdagsbridge.
     """
-    result: dict[int, str] = {}
-    alt_slugs = ["bk-lejonet"]
-    for slug in alt_slugs:
-        for tvl_id in _load_ids_from_file(f"data/{slug}_tvl_ids.txt"):
-            result[tvl_id] = slug
-    for slug in alt_slugs:
-        for tvl_id in discover_tvl_links_on_club_page(slug):
-            result.setdefault(tvl_id, slug)
-    return result
+    return {}
 
 
 def all_tvl_ids_to_fetch() -> list[tuple[int, str]]:
@@ -151,32 +178,38 @@ def _tvl_url(comp_id: int, club_slug: str = CLUB_PATH) -> str:
     return f"https://www.svenskbridge.se/{club_slug}/tvl/{comp_id}"
 
 
-def fetch_scratch_pcts(comp_id: int, club_slug: str = CLUB_PATH) -> dict[str, float]:
-    """Scratch-procent per parnamn (kolumn Namn med ' - ')."""
+def fetch_scratch_data(comp_id: int, club_slug: str = CLUB_PATH) -> dict[str, dict]:
+    """Scratch-data per parnamn: procent och placering från scratch-resultatlistan."""
     url = _tvl_url(comp_id, club_slug) + "/scratch"
     try:
         resp = requests.get(url, timeout=20)
         if resp.status_code != 200:
             return {}
         soup = BeautifulSoup(resp.text, "html.parser")
-        result: dict[str, float] = {}
+        result: dict[str, dict] = {}
         for table in soup.find_all("table"):
             for row in table.find_all("tr"):
                 cells = row.find_all("td")
                 if len(cells) >= 4:
                     try:
+                        placement = int(cells[0].get_text(strip=True))
                         pair_name = cells[3].get_text(strip=True)
                         scratch_pct = float(
                             cells[2].get_text(strip=True).replace(",", ".")
                         )
                         if pair_name:
-                            result[pair_name] = scratch_pct
+                            result[pair_name] = {"pct": scratch_pct, "placement": placement}
                     except (ValueError, IndexError):
                         continue
         return result
     except OSError as e:
         logger.warning("Fel vid scratch för tävling %s: %s", comp_id, e)
         return {}
+
+
+def fetch_scratch_pcts(comp_id: int, club_slug: str = CLUB_PATH) -> dict[str, float]:
+    """Scratch-procent per parnamn (bakåtkompatibelt)."""
+    return {k: v["pct"] for k, v in fetch_scratch_data(comp_id, club_slug).items()}
 
 
 def fetch_competition(comp_id: int, club_slug: str = CLUB_PATH) -> dict | None:
@@ -221,7 +254,7 @@ def fetch_competition(comp_id: int, club_slug: str = CLUB_PATH) -> dict | None:
         title = _competition_h1(soup)
 
         time.sleep(0.2)
-        scratch_pcts = fetch_scratch_pcts(comp_id, club_slug)
+        scratch_data = fetch_scratch_data(comp_id, club_slug)
 
         pairs: list[dict] = []
         for table in soup.find_all("table"):
@@ -233,7 +266,7 @@ def fetch_competition(comp_id: int, club_slug: str = CLUB_PATH) -> dict | None:
                 if len(cells) < 7:
                     continue
                 try:
-                    placement = int(cells[0].get_text(strip=True))
+                    hcp_placement = int(cells[0].get_text(strip=True))
                     hcp_pct = float(cells[2].get_text(strip=True).replace(",", "."))
                     pair_name = cells[3].get_text(strip=True)
                     if len(cells) >= 8:
@@ -246,10 +279,13 @@ def fetch_competition(comp_id: int, club_slug: str = CLUB_PATH) -> dict | None:
 
                 sp1, sp2 = split_pair_name(pair_name)
 
-                scratch_pct = scratch_pcts.get(pair_name)
+                sd = scratch_data.get(pair_name, {})
+                scratch_pct = sd.get("pct")
+                scratch_placement = sd.get("placement")
 
                 pairs.append({
-                    "placement": placement,
+                    "placement": hcp_placement,
+                    "scratch_placement": scratch_placement,
                     "hcp_pct": hcp_pct,
                     "scratch_pct": scratch_pct,
                     "spelare1": sp1,
@@ -279,11 +315,13 @@ def fetch_all_results(
     fetch_hcp: bool = True,
 ) -> dict:
     if fetch_hcp and handicaps is None:
+        logger.info("Hämtar handicaplistor från SVB (GBF + KronViva)…")
         handicaps = fetch_club_handicaps()
 
     today = date.today()
     all_competitions: list[dict] = []
 
+    logger.info("Söker tävlings-ID:n från KronViva- och BK Lejonet-sidan…")
     id_list = all_tvl_ids_to_fetch()
     logger.info("Hämtar %s tvl-IDs (klubbindex + ev. extra lista)…", len(id_list))
 
@@ -342,6 +380,7 @@ def fetch_all_results(
                     "title": comp["title"],
                     "comp_id": comp["id"],
                     "placement": pair["placement"],
+                    "scratch_placement": pair.get("scratch_placement"),
                     "hcp_pct": pair["hcp_pct"],
                     "scratch_pct": pair["scratch_pct"],
                     "pair_hcp": pair["pair_hcp"],
@@ -482,6 +521,7 @@ def load_results(path: str = "data/results.json") -> dict | None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    print("Startar scraper – hämtar handicaplistor från SVB…", flush=True)
     birthdates = load_birthdates()
     results = fetch_all_results(birthdates)
     save_results(results)

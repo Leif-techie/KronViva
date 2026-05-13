@@ -7,7 +7,8 @@ import time
 import requests
 from bs4 import BeautifulSoup
 
-MONTHS = ["2026-01", "2026-02", "2026-03"]
+MONTHS = ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06",
+          "2026-07", "2026-08", "2026-09", "2026-10", "2026-11", "2026-12"]
 CLUB_COMP_RE = re.compile(
     r"(\d{4}-\d{2}-\d{2})(?:\s|&nbsp;)+(?:<a\s[^>]*/kronviva[^>]*>)?KronViva",
     re.IGNORECASE,
