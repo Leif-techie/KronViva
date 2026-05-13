@@ -21,7 +21,8 @@ from scraper import fetch_all_results, load_birthdates, load_results, save_resul
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-DATA_PATH = "data/results.json"
+_data_dir = Path("/data") if Path("/data").exists() else Path("data")
+DATA_PATH = str(_data_dir / "results.json")
 REFRESH_SECRET = os.environ.get("REFRESH_SECRET", "bridge2026")
 
 _cache: dict | None = None
